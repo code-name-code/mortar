@@ -1,0 +1,1 @@
+Very basic ES6 based JS&DOM testing tool implementation.
