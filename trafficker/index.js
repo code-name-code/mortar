@@ -67,6 +67,10 @@ export default class Router {
       window.location.hash.substring(1)
     );
 
+    let queryParams = this.stripQueryParams(
+      window.location.hash.substring(1)
+    );
+
     if (hashLocation.startsWith(this.#_parentMatch)) {
       hashLocation = hashLocation.slice(
         this.#_parentMatch.length
@@ -77,7 +81,7 @@ export default class Router {
 
     if (Router.BLANK_LOCATION.includes(hashLocation)) {
       hashLocation = this.defaultRoutePath;
-      location.hash = '#' + this.#_parentMatch + hashLocation;
+      location.hash = '#' + this.#_parentMatch + hashLocation + queryParams;
     }
 
     let match = this.longestMatchingRoute(hashLocation);
@@ -137,6 +141,19 @@ export default class Router {
     return questionMarkIndex > -1
       ? hashLocation.substring(0, questionMarkIndex)
       : hashLocation;
+  }
+
+  stripQueryParams(hashLocation) {
+    let questionMarkIndex = hashLocation.indexOf('?');
+    return questionMarkIndex > -1
+      ? hashLocation.substring(questionMarkIndex)
+      : '';
+  }
+
+  getQueryParams() {
+    return new URLSearchParams(this.stripQueryParams(
+      window.location.hash.substring(1)
+    ));
   }
 
   get routes() {
