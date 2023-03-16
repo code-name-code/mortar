@@ -101,7 +101,7 @@ export default class I18n {
     let codes = lines[0].trim().split('\t');
     let names = lines
       .filter(line =>
-        line.startsWith('dit-csp.label.full-name')
+        line.startsWith('text.available-languages')
       )[0]
       .trim()
       .split('\t');

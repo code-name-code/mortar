@@ -2,29 +2,26 @@ export default class Router {
   static BLANK_LOCATION = ['', '/'];
 
   #_outlet;
-  #_defaultRoutePath;
   #_pageNotFound;
   #_routes;
   #_open;
   #_currentPath;
   #_parentMatch;
+  #_onPathChange = new Set();
 
-  constructor(
-    outlet,
-    defaultRoutePath,
-    pageNotFound,
-    routes,
-    parentMatch
-  ) {
+  constructor() {
     this.#_open = false;
+  }
 
+  configure(outlet, pageNotFound, routes, parentMatch) {
     this.#_outlet = outlet;
-    this.#_defaultRoutePath = defaultRoutePath;
     this.#_pageNotFound = pageNotFound;
     this.#_routes = routes;
     this.#_parentMatch = parentMatch ?? '';
 
     this.onHashChange = this.onHashChange.bind(this);
+
+    return this;
   }
 
   isOpen() {
@@ -35,7 +32,7 @@ export default class Router {
     if (!this.isOpen()) {
       window.addEventListener('hashchange', this.onHashChange);
       this.#_open = true;
-      this.deepLink(window.location.hash.substring(1));
+      this.onHashChange({});
     }
   }
 
@@ -50,12 +47,17 @@ export default class Router {
   }
 
   goTo(path) {
-    if (history.pushState) {
-      history.pushState(null, null, '#' + path);
-      this.onHashChange({});
-    } else {
-      location.hash = '#' + path;
+    if (path.startsWith('/')) {
+      path = '#' + path;
+    } else if (!path.startsWith('#')) {
+      path = '#/' + path;
     }
+    location.hash = path;
+  }
+
+  reload() {
+    this.#_currentPath = null;
+    this.onHashChange({});
   }
 
   onHashChange(e) {
@@ -63,11 +65,7 @@ export default class Router {
       return;
     }
 
-    let hashLocation = this.stripHashLocation(
-      window.location.hash.substring(1)
-    );
-
-    let queryParams = this.stripQueryParams(
+    let hashLocation = this.#stripHashLocation(
       window.location.hash.substring(1)
     );
 
@@ -79,30 +77,31 @@ export default class Router {
       return;
     }
 
-    if (Router.BLANK_LOCATION.includes(hashLocation)) {
-      hashLocation = this.defaultRoutePath;
-      location.hash = '#' + this.#_parentMatch + hashLocation + queryParams;
+    let match = this.#longestMatchingRoute(hashLocation);
+    if (match.redirected) {
+      this.#updateHash(match.path);
     }
-
-    let match = this.longestMatchingRoute(hashLocation);
     if (!this.currentPath || match.path !== this.currentPath) {
+      const oldPath = this.#_currentPath;
       this.#_currentPath = match.path;
+      this.#onPathChange(oldPath, this.#_currentPath);
 
-      if (!match.route) {
-        this.flushToOutlet(this.pageNotFound());
+      if (!match.destination) {
+        this.#flushToOutlet(this.pageNotFound());
         return;
       } else {
-        this.flushToOutlet(match.route());
+        this.#flushToOutlet(match.destination());
       }
     }
   }
 
-  longestMatchingRoute(hashLocation) {
+  #longestMatchingRoute(startingHashLocation) {
+    let hashLocation = startingHashLocation;
     let route;
     do {
-      route = this.routes[hashLocation];
-      if (route) {
-        return { path: hashLocation, route: route };
+      route = this.#resolveRoute(hashLocation);
+      if (route.destination) {
+        return route;
       }
 
       hashLocation = hashLocation.substring(
@@ -113,7 +112,29 @@ export default class Router {
     return {};
   }
 
-  async flushToOutlet(module) {
+  #resolveRoute(inputPath) {
+    let destination = this.routes[inputPath];
+    if (typeof destination === 'string') {
+      let result = this.#resolveRoute(destination);
+      result.redirected = true;
+      return result;
+    } else {
+      return { path: inputPath, destination: destination };
+    }
+  }
+
+  #updateHash(targetPath) {
+    if (targetPath) {
+      let queryParams = this.#stripQueryParams(location.hash);
+      let targetHashLocation =
+        '#' + this.#_parentMatch + targetPath + queryParams;
+      if (location.hash !== targetHashLocation) {
+        history.replaceState(null, null, targetHashLocation);
+      }
+    }
+  }
+
+  async #flushToOutlet(module) {
     if (
       typeof module === 'object' &&
       typeof module.then === 'function'
@@ -125,25 +146,14 @@ export default class Router {
     document.querySelector('#' + this.outlet).append(module);
   }
 
-  deepLink(uri) {
-    let route = this.longestMatchingRoute(
-      this.stripHashLocation(uri)
-    );
-    if (this.defaultRoutePath && !route) {
-      this.goTo(this.defaultRoutePath);
-    } else {
-      this.goTo(uri);
-    }
-  }
-
-  stripHashLocation(hashLocation) {
+  #stripHashLocation(hashLocation) {
     let questionMarkIndex = hashLocation.indexOf('?');
     return questionMarkIndex > -1
       ? hashLocation.substring(0, questionMarkIndex)
       : hashLocation;
   }
 
-  stripQueryParams(hashLocation) {
+  #stripQueryParams(hashLocation) {
     let questionMarkIndex = hashLocation.indexOf('?');
     return questionMarkIndex > -1
       ? hashLocation.substring(questionMarkIndex)
@@ -151,9 +161,58 @@ export default class Router {
   }
 
   getQueryParams() {
-    return new URLSearchParams(this.stripQueryParams(
-      window.location.hash.substring(1)
-    ));
+    return new URLSearchParams(
+      this.#stripQueryParams(location.hash)
+    );
+  }
+
+  setQueryParams(params, suppressOnHashchange = false) {
+    const urlSearchParams = this.getQueryParams();
+    for (const key in params) {
+      if (params[key] === undefined) {
+        urlSearchParams.delete(key);
+      } else {
+        urlSearchParams.set(key, params[key]);
+      }
+    }
+    const queryParamString = urlSearchParams.toString()
+      ? '?' + urlSearchParams.toString()
+      : '';
+    const newHashLocation =
+      this.#stripHashLocation(window.location.hash) +
+      queryParamString;
+    if (suppressOnHashchange) {
+      history.pushState(null, null, newHashLocation);
+    } else {
+      location.hash = newHashLocation;
+    }
+  }
+
+  /**
+   * Add callback to be invoked when current path in router changes.
+   * @param {*} onPathChange
+   */
+  addOnPathChange(onPathChange) {
+    this.#_onPathChange.add(onPathChange);
+  }
+
+  removeOnPathChange(onPathChange) {
+    this.#_onPathChange.delete(onPathChange);
+  }
+
+  isCurrentFullPath(targetPath) {
+    const currentFullPath = location.hash.substring(1);
+    if (targetPath.startsWith('#')){
+      targetPath = targetPath.substring(1);
+    }
+
+    return currentFullPath.startsWith(targetPath);
+  }
+
+  #onPathChange(oldPath, newPath) {
+    this.#_onPathChange.forEach(onPathChange =>
+      onPathChange(oldPath, newPath)
+    );
   }
 
   get routes() {
@@ -162,10 +221,6 @@ export default class Router {
 
   get outlet() {
     return this.#_outlet;
-  }
-
-  get defaultRoutePath() {
-    return this.#_defaultRoutePath;
   }
 
   get pageNotFound() {

@@ -1,4 +1,4 @@
-import { div } from '../htmlhammer/index.js';
+import { div } from '../../htmlhammer/index.js';
 import { test } from '../inspector/index.js';
 import Injector, { bindings, inject } from './index.js';
 
