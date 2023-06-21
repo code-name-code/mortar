@@ -1,101 +1,16 @@
-export default class Router {
-  static BLANK_LOCATION = ['', '/'];
-
+class RouterNode {
   #_outlet;
   #_pageNotFound;
   #_routes;
-  #_open;
   #_currentPath;
-  #_parentMatch;
-  #_onPathChange = new Set();
 
-  constructor() {
-    this.#_open = false;
-  }
-
-  configure(outlet, pageNotFound, routes, parentMatch) {
+  constructor(outlet, pageNotFound, routes) {
     this.#_outlet = outlet;
     this.#_pageNotFound = pageNotFound;
     this.#_routes = routes;
-    this.#_parentMatch = parentMatch ?? '';
-
-    this.onHashChange = this.onHashChange.bind(this);
-
-    return this;
   }
 
-  isOpen() {
-    return this.#_open;
-  }
-
-  open() {
-    if (!this.isOpen()) {
-      window.addEventListener('hashchange', this.onHashChange);
-      this.#_open = true;
-      this.onHashChange({});
-    }
-  }
-
-  close() {
-    if (this.isOpen()) {
-      window.removeEventListener(
-        'hashchange',
-        this.onHashChange
-      );
-      this.#_open = false;
-    }
-  }
-
-  goTo(path) {
-    if (path.startsWith('/')) {
-      path = '#' + path;
-    } else if (!path.startsWith('#')) {
-      path = '#/' + path;
-    }
-    location.hash = path;
-  }
-
-  reload() {
-    this.#_currentPath = null;
-    this.onHashChange({});
-  }
-
-  onHashChange(e) {
-    if (!this.isOpen()) {
-      return;
-    }
-
-    let hashLocation = this.#stripHashLocation(
-      window.location.hash.substring(1)
-    );
-
-    if (hashLocation.startsWith(this.#_parentMatch)) {
-      hashLocation = hashLocation.slice(
-        this.#_parentMatch.length
-      );
-    } else {
-      return;
-    }
-
-    let match = this.#longestMatchingRoute(hashLocation);
-    if (match.redirected) {
-      this.#updateHash(match.path);
-    }
-    if (!this.currentPath || match.path !== this.currentPath) {
-      const oldPath = this.#_currentPath;
-      this.#_currentPath = match.path;
-      this.#onPathChange(oldPath, this.#_currentPath);
-
-      if (!match.destination) {
-        this.#flushToOutlet(this.pageNotFound());
-        return;
-      } else {
-        this.#flushToOutlet(match.destination());
-      }
-    }
-  }
-
-  #longestMatchingRoute(startingHashLocation) {
+  longestMatchingRoute(startingHashLocation) {
     let hashLocation = startingHashLocation;
     let route;
     do {
@@ -113,7 +28,7 @@ export default class Router {
   }
 
   #resolveRoute(inputPath) {
-    let destination = this.routes[inputPath];
+    let destination = this.#_routes[inputPath];
     if (typeof destination === 'string') {
       let result = this.#resolveRoute(destination);
       result.redirected = true;
@@ -123,18 +38,7 @@ export default class Router {
     }
   }
 
-  #updateHash(targetPath) {
-    if (targetPath) {
-      let queryParams = this.#stripQueryParams(location.hash);
-      let targetHashLocation =
-        '#' + this.#_parentMatch + targetPath + queryParams;
-      if (location.hash !== targetHashLocation) {
-        history.replaceState(null, null, targetHashLocation);
-      }
-    }
-  }
-
-  async #flushToOutlet(module) {
+  async flushToOutlet(module) {
     if (
       typeof module === 'object' &&
       typeof module.then === 'function'
@@ -144,6 +48,163 @@ export default class Router {
     }
     document.querySelector('#' + this.outlet).innerHTML = '';
     document.querySelector('#' + this.outlet).append(module);
+  }
+
+  get outlet() {
+    return this.#_outlet;
+  }
+
+  get pageNotFound() {
+    return this.#_pageNotFound;
+  }
+
+  set currentPath(currentPath) {
+    this.#_currentPath = currentPath;
+  }
+
+  get currentPath() {
+    return this.#_currentPath;
+  }
+}
+
+class SimpleRouterNode extends RouterNode {
+  #_destination;
+
+  constructor(outlet, pageNotFound, destination) {
+    super(outlet, pageNotFound);
+    this.#_destination = destination;
+  }
+
+  longestMatchingRoute() {
+    return { path: '', destination: this.#_destination };
+  }
+}
+
+export default class Router {
+  static BLANK_LOCATION = ['', '/'];
+
+  #_onPathChange = new Set();
+  #_routerNodes = new Set();
+  #_currentFullPath;
+
+  constructor() {
+    this.onHashChange = this.onHashChange.bind(this);
+    window.addEventListener('hashchange', this.onHashChange);
+  }
+
+  configure(outlet, pageNotFound, routes) {
+    const routerNode = new RouterNode(
+      outlet,
+      pageNotFound,
+      routes
+    );
+
+    this.#_routerNodes.add(routerNode);
+
+    this.onHashChange({});
+
+    return {
+      close: () => {
+        this.#_routerNodes.delete(routerNode);
+      }
+    };
+  }
+
+  configureSimple(outlet, pageNotFound, destination) {
+    const routerNode = new SimpleRouterNode(
+      outlet,
+      pageNotFound,
+      destination
+    );
+
+    this.#_routerNodes.add(routerNode);
+
+    this.onHashChange({});
+
+    return {
+      close: () => {
+        this.#_routerNodes.delete(routerNode);
+      }
+    };
+  }
+
+  goTo(path) {
+    if (path.startsWith('/')) {
+      path = '#' + path;
+    } else if (!path.startsWith('#')) {
+      path = '#/' + path;
+    }
+    location.hash = path;
+  }
+
+  reload() {
+    this.#_routerNodes.forEach(routerNode => {
+      routerNode.currentPath = undefined;
+    });
+    this.onHashChange({});
+  }
+
+  onHashChange(e) {
+    let parentNode;
+    let parentPath = '';
+
+    let hashLocation = this.#stripHashLocation(
+      window.location.hash.substring(1)
+    );
+
+    this.#_routerNodes.forEach(routerNode => {
+      if (parentNode) {
+        hashLocation = hashLocation.slice(
+          parentNode.currentPath.length
+        );
+      }
+
+      this.#evaluateRouterNode(
+        hashLocation,
+        routerNode,
+        parentPath
+      );
+
+      parentNode = routerNode;
+      parentPath += parentNode.currentPath;
+    });
+  }
+
+  #evaluateRouterNode(hashLocation, routerNode, parentPath) {
+    let match = routerNode.longestMatchingRoute(hashLocation);
+    if (match.redirected) {
+      this.#updateHash(match.path, parentPath);
+    }
+    if (
+      routerNode.currentPath === undefined ||
+      match.path !== routerNode.currentPath
+    ) {
+      routerNode.currentPath = match.path;
+
+      const oldPath = this.#_currentFullPath;
+      this.#_currentFullPath = this.#stripHashLocation(
+        location.hash.substring(1)
+      );
+      this.#onPathChange(oldPath, this.#_currentFullPath);
+
+      if (!match.destination) {
+        routerNode.flushToOutlet(routerNode.pageNotFound());
+        return;
+      } else {
+        routerNode.flushToOutlet(match.destination());
+      }
+    }
+  }
+
+  #updateHash(targetPath, parentPath) {
+    if (targetPath) {
+      let queryParams = this.#stripQueryParams(location.hash);
+      let targetHashLocation =
+        '#' + parentPath + targetPath + queryParams;
+      if (location.hash !== targetHashLocation) {
+        history.replaceState(null, null, targetHashLocation);
+      }
+    }
   }
 
   #stripHashLocation(hashLocation) {
@@ -202,7 +263,7 @@ export default class Router {
 
   isCurrentFullPath(targetPath) {
     const currentFullPath = location.hash.substring(1);
-    if (targetPath.startsWith('#')){
+    if (targetPath.startsWith('#')) {
       targetPath = targetPath.substring(1);
     }
 
@@ -213,21 +274,5 @@ export default class Router {
     this.#_onPathChange.forEach(onPathChange =>
       onPathChange(oldPath, newPath)
     );
-  }
-
-  get routes() {
-    return this.#_routes;
-  }
-
-  get outlet() {
-    return this.#_outlet;
-  }
-
-  get pageNotFound() {
-    return this.#_pageNotFound;
-  }
-
-  get currentPath() {
-    return this.#_currentPath;
   }
 }
